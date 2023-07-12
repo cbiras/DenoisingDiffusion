@@ -13,19 +13,19 @@ def to_device(data,device):
     return data.to(device,non_blocking=True)
 
 class DeviceDataLoader:
-    def __init__(self,dl,device):
+    def __init__(self , dl, device):
         self.dl = dl
         self.device=device
 
     def __iter__(self):
         for b in self.dl:
-            yield to_device(b,self.device)
+            yield to_device(b, self.device)
 
     def __len__(self):
         return len(self.dl)
 
 def get_default_device():
-    return torch.device("cuda" if torch.cuda.is_available() else 'cpu')
+    return torch.device("cuda:0" if torch.cuda.is_available() else 'cpu')
 
 def save_images(images,path,**kwargs):
     grid = make_grid(images,**kwargs)

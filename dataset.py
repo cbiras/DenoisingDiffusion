@@ -1,29 +1,8 @@
-from dataclasses import dataclass
-import os
+from config import *
 import torchvision.transforms as tf
-from helper import get_default_device, DeviceDataLoader
+from helper import  DeviceDataLoader
 import torchvision.datasets as datasets
 from torch.utils.data import Dataset,DataLoader
-
-@dataclass
-class BaseConfig:
-    DEVICE = get_default_device()
-    DATASET = "Flowers"
-
-    root_log_dir = os.path.join("Logs_Checkpoints", "Inference")
-    root_checkpoint_dir = os.path.join("Logs_Checkpoints", "checkpoints")
-
-    log_dir = "version_0"
-    checkpoint_dir = "version_0"
-
-@dataclass
-class TrainingConfig:
-    TIMESTEPS = 1000
-    IMG_SHAPE = (1,32,32) if BaseConfig.DATASET == 'Mnist' else (3,32,32)
-    NUM_EPOCHS = 800
-    BATCH_SIZE = 32
-    LR = 2e-4
-    NUM_WORKERS = 2
 
 def get_dataset(dataset_name='Flowers'):
     transforms = tf.Compose(
@@ -51,7 +30,7 @@ def get_dataloader(dataset_name='FLOWERS',
     dataset = get_dataset(dataset_name)
     dataloader = DataLoader(dataset=dataset,batch_size=batchsize,shuffle=shuffle,pin_memory=pin_memory,num_workers=num_workers)
 
-    device_dataloader = DeviceDataLoader(dataloader,device)
+    device_dataloader = DeviceDataLoader(dataloader, device)
     return device_dataloader
 
 def inverse_tranform(tensors):

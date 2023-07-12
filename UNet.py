@@ -27,7 +27,7 @@ class SinusoidalPositionalEmbedding(nn.Module):
         return self.time_blocks(time)
 
 class AttentionBlock(nn.Module):
-    def __int__(self,channels=64):
+    def __init__(self,channels=64):
         super().__init__()
 
         self.channels = channels
@@ -47,56 +47,61 @@ class AttentionBlock(nn.Module):
 
 
 class ResNetBlock(nn.Module):
-    def __init__(self,*,input_channels,output_channels,dropout_rate=0.1,time_emb_dims=512,apply_attention=False):
+    def __init__(self, *, in_channels, out_channels, dropout_rate=0.1, time_emb_dims=512, apply_attention=False):
         super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
-        self.input_channels = input_channels
-        self.output_channels = output_channels
+        self.act_fn = nn.SiLU()
+        # Group 1
+        self.normlize_1 = nn.GroupNorm(num_groups=8, num_channels=self.in_channels)
+        self.conv_1 = nn.Conv2d(in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=3, stride=1, padding="same")
 
-        self.activation = nn.GELU()
+        # Group 2 time embedding
+        self.dense_1 = nn.Linear(in_features=time_emb_dims, out_features=self.out_channels)
 
-        self.norm1 = nn.GroupNorm(num_groups=8,num_channels=input_channels)
-        self.conv1 = nn.Conv2d(input_channels=input_channels,output_channels=output_channels,kernel_size=3,stride=1,padding='same')
+        # Group 3
+        self.normlize_2 = nn.GroupNorm(num_groups=8, num_channels=self.out_channels)
+        self.dropout = nn.Dropout2d(p=dropout_rate)
+        self.conv_2 = nn.Conv2d(in_channels=self.out_channels, out_channels=self.out_channels, kernel_size=3, stride=1, padding="same")
 
-        self.dense = nn.Linear(in_features=time_emb_dims,out_features=output_channels)
-
-        self.norm2 = nn.GroupNorm(num_groups=8,num_channels=output_channels)
-        self.dropout = nn.Dropout(p=dropout_rate)
-        self.conv2 = nn.Conv2d(input_channels=output_channels,output_channels=output_channels,kernel_size=3,stride=1,padding='same')
-
-        if input_channels != output_channels:
-            self.match_channels = nn.Conv2d(input_channels=input_channels,output_channels=output_channels,kernel_size=1,stride=1,padding='same')
+        if self.in_channels != self.out_channels:
+            self.match_input = nn.Conv2d(in_channels=self.in_channels, out_channels=self.out_channels, kernel_size=1, stride=1)
         else:
-            self.match_channels = nn.Identity()
+            self.match_input = nn.Identity()
 
         if apply_attention:
-            self.attention = AttentionBlock(output_channels)
+            self.attention = AttentionBlock(channels=self.out_channels)
         else:
             self.attention = nn.Identity()
 
-    def forward(self,x,t):
+    def forward(self, x, t):
+        # group 1
+        h = self.act_fn(self.normlize_1(x))
+        h = self.conv_1(h)
 
-        x1 = self.norm1(x)
-        x1 = self.activation(self.conv1(x1))
+        # group 2
+        # add in timestep embedding
+        h += self.dense_1(self.act_fn(t))[:, :, None, None]
 
-        x1 += self.dense(self.activation(t))[:,:,None,None]
+        # group 3
+        h = self.act_fn(self.normlize_2(h))
+        h = self.dropout(h)
+        h = self.conv_2(h)
 
-        x1 = self.norm2(x1)
-        x1 = self.activation(self.conv2(x1))
-        x1 = self.dropout(x1)
+        # Residual and attention
+        h = h + self.match_input(x)
+        h = self.attention(h)
 
-        x1 = x1 + self.match_channels(x1)
-        x1 = self.attention(x1)
-
-        return x1
+        return h
 
 class Downsample(nn.Module):
     def __init__(self,channels):
         super().__init__()
 
-        self.downsample = nn.Conv2d(in_channels=channels,out_channels=channels,kernel_size=3,stride=2)
+        self.downsample = nn.Conv2d(in_channels=channels,out_channels=channels,kernel_size=3,stride=2,padding=1)
 
-    def forward(self,x):
+    def forward(self,x,*args):
         return self.downsample(x)
 
 class Upsample(nn.Module):
@@ -107,11 +112,11 @@ class Upsample(nn.Module):
             nn.Upsample(mode='nearest',scale_factor=2),
             nn.Conv2d(in_channels=in_channels,out_channels=in_channels,kernel_size=3,stride=1,padding=1)
         )
-    def forward(self,x):
+    def forward(self,x,*args):
         return self.upsample(x)
 
 class UNet(nn.Module):
-    def __int__(self,
+    def __init__(self,
                 input_channels=3,
                 output_channels=3,
                 base_channels=128,
@@ -121,10 +126,10 @@ class UNet(nn.Module):
                 dropout_rate=0.1,
                 time_multiply=4
                 ):
-        super().__int__()
+        super().__init__()
 
         time_emb_dims_exp = base_channels * time_multiply
-        self.positional_encoding = SinusoidalPositionalEmbedding(time_emb_dims_exp=time_emb_dims_exp)
+        self.positional_encoding = SinusoidalPositionalEmbedding(time_emb_dims=base_channels,time_emb_dims_exp=time_emb_dims_exp)
 
         self.stem = nn.Conv2d(in_channels=input_channels,out_channels=base_channels,kernel_size=3,stride=1,padding='same')
 
@@ -137,10 +142,10 @@ class UNet(nn.Module):
         for level in range(num_resolutions):
             out_channels = base_channels * base_ch_multipliers[level]
 
-            for _ in num_res_blocks:
+            for _ in range(num_res_blocks):
                 block = ResNetBlock(
                     in_channels=in_channels,
-                    output_channels=out_channels,
+                    out_channels=out_channels,
                     dropout_rate=dropout_rate,
                     time_emb_dims=time_emb_dims_exp,
                     apply_attention=apply_attention[level]
@@ -149,7 +154,7 @@ class UNet(nn.Module):
 
                 in_channels = out_channels
                 curr_channels.append(in_channels)
-            if level != (num_resolutions-1):
+            if level != (num_resolutions - 1):
                 self.encoder.append(Downsample(in_channels))
                 curr_channels.append(in_channels)
 
@@ -159,14 +164,14 @@ class UNet(nn.Module):
             (
             ResNetBlock(
                 in_channels=in_channels,
-                output_channels=in_channels,
+                out_channels=in_channels,
                 dropout_rate=dropout_rate,
                 time_emb_dims=time_emb_dims_exp,
                 apply_attention=True
             ),
             ResNetBlock(
                 in_channels=in_channels,
-                output_channels=in_channels,
+                out_channels=in_channels,
                 dropout_rate=dropout_rate,
                 time_emb_dims=time_emb_dims_exp,
                 apply_attention=False
@@ -179,21 +184,21 @@ class UNet(nn.Module):
         for level in reversed(range(num_resolutions)):
             out_channels = base_channels * base_ch_multipliers[level]
 
-            for _ in (num_res_blocks + 1):
+            for _ in range(num_res_blocks + 1):
                 encoder_in_channels = curr_channels.pop()
                 block = ResNetBlock(
                     in_channels=in_channels + encoder_in_channels,
-                    output_channels=in_channels,
+                    out_channels=out_channels,
                     dropout_rate=dropout_rate,
                     time_emb_dims=time_emb_dims_exp,
                     apply_attention=apply_attention[level]
                 )
 
                 in_channels = out_channels
-                self.decoder.append()
+                self.decoder.append(block)
 
-                if level != 0:
-                    self.decoder.append(Upsample(in_channels))
+            if level != 0:
+                self.decoder.append(Upsample(in_channels))
 
         self.final = nn.Sequential(
             nn.GroupNorm(num_groups=8,num_channels=in_channels),
@@ -205,23 +210,23 @@ class UNet(nn.Module):
 
         positional_encoding = self.positional_encoding(t)
 
-        x = self.stem(x)
-        outs = [x]
+        h = self.stem(x)
+        outs = [h]
 
         for layer in self.encoder:
-            x = layer(x,positional_encoding)
-            outs.append(x)
+            h = layer(h,positional_encoding)
+            outs.append(h)
 
         for layer in self.between:
-            x = layer(x,positional_encoding)
+            h = layer(h,positional_encoding)
 
         for layer in self.decoder:
             if isinstance(layer,ResNetBlock):
                 out = outs.pop()
-                x = torch.cat([x,out],dim=1)
-            x = layer(x)
+                h = torch.cat([h, out],dim=1)
+            h = layer(h,positional_encoding)
 
-        return self.final(x)
+        return self.final(h)
 
 
 
